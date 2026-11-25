@@ -111,6 +111,10 @@ migration-kit-a2b/
 - **Builds locais** — projectos com `build:` no compose produzem imagens
   `<projecto>-<serviço>`; o collect grava-as. Se o compose usar `image:` com
   nome diferente do gerado, confere no `docker images` do manifest.
+- **Volumes em uso** — a primeira passagem copia a quente. O `tar` pode avisar
+  `file changed as we read it` em volumes activos (MinIO, BDs); o script
+  continua e assinala o volume como inconsistente. A cópia boa é a da passagem
+  final, com os containers parados.
 - **Nomes das pastas** — os vols do compose têm prefixo do nome da pasta em
   `/opt`. **Mantém os mesmos nomes de pastas** no B, senão os volumes não
   emparelham.

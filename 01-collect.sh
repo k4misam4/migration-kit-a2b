@@ -160,22 +160,43 @@ fi
 
 # ----------------------------------------------------------------------------
 log "6/9 · Volumes docker"
-TOTAL=0
+if [[ -n "$(docker ps -q 2>/dev/null)" ]]; then
+  warn "há containers a correr: volumes de BD podem ficar inconsistentes"
+  info "cópia consistente = parar os stacks e correr --data-only no final"
+fi
+TOTAL=0 ; MVFAIL=0
 mapfile -t VOLUMES < <(docker volume ls -q 2>/dev/null || true)
 for v in "${VOLUMES[@]:-}"; do
   [[ -z "$v" ]] && continue
-  p="/var/lib/docker/volumes/$v/_data"
-  if [[ -d "$p" ]]; then
-    sz="$(du -sb "$p" 2>/dev/null | cut -f1)"; TOTAL=$((TOTAL + sz))
-    tar -czf "$ST/volumes/${v}.tar.gz" --numeric-owner \
-      -C "/var/lib/docker/volumes/$v" _data
-    ok "$v  ($(numfmt --to=iec "$sz" 2>/dev/null || echo "${sz}b"))"
+  mp="$(docker volume inspect -f '{{.Mountpoint}}' "$v" 2>/dev/null || true)"
+  [[ -n "$mp" ]] || mp="/var/lib/docker/volumes/$v/_data"
+  if [[ -d "$mp" ]]; then
+    sz="$(du -sb "$mp" 2>/dev/null | cut -f1 || true)"
+    [[ "$sz" =~ ^[0-9]+$ ]] || sz=0
+    TOTAL=$((TOTAL + sz))
+    out="$ST/volumes/${v}.tar.gz"
+    rc=0
+    tar -czf "$out" --numeric-owner -C "$(dirname "$mp")" "$(basename "$mp")" \
+      2>"$ST/volumes/${v}.err" || rc=$?
+    case "$rc" in
+      0) ok "$v  ($(numfmt --to=iec "$sz" 2>/dev/null || echo "${sz}b"))"
+         rm -f "$ST/volumes/${v}.err" ;;
+      1) warn "$v: ficheiros mudaram durante a cópia (volume em uso) — repetir a frio; ver ${v}.err"
+         MVFAIL=$((MVFAIL + 1)) ;;
+      *) warn "$v: tar falhou (código $rc) — ver ${v}.err"
+         cat "$ST/volumes/${v}.err" >&2
+         MVFAIL=$((MVFAIL + 1)) ;;
+    esac
   else
     info "$v vazio"
   fi
 done
 [[ ${#VOLUMES[@]} -eq 0 ]] && warn "nenhum volume docker"
 info "volumes total: $(numfmt --to=iec "$TOTAL" 2>/dev/null || echo "${TOTAL}b")"
+if [[ $MVFAIL -gt 0 ]]; then
+  warn "ATENÇÃO: $MVFAIL volume(s) com cópia incompleta/inconsistente."
+  warn "NÃO usar este bundle como passagem final — repetir com os stacks parados."
+fi
 
 # ----------------------------------------------------------------------------
 log "7/9 · Imagens docker"
