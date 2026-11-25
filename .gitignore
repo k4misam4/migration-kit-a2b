@@ -1,0 +1,41 @@
+# ==========================================================
+#  Artefactos gerados pelo próprio kit (contêm segredos)
+#  Nunca versionar: bundles, dados de volumes, .env, chaves
+# ==========================================================
+/migracao-*/
+/staging/
+/volumes/
+/envs/
+/images/
+bundle*.tar.gz.enc
+*.tar.gz.enc
+*.tar.gz
+*.tar
+
+# ----------------------------------------------------------
+#  Segredos
+# ----------------------------------------------------------
+.env
+.env.*
+*.env
+!*.env.example
+*.pem
+*.key
+
+# ----------------------------------------------------------
+#  Temporários do kit / logs
+# ----------------------------------------------------------
+.migpass.*
+*.log
+*.err
+
+# ----------------------------------------------------------
+#  Sistema e editores
+# ----------------------------------------------------------
+.DS_Store
+Thumbs.db
+desktop.ini
+*.swp
+*.swo
+.idea/
+.vscode/
