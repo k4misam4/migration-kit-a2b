@@ -10,8 +10,8 @@
 #
 #  O que faz:
 #     - desencripta e extrai o pacote
-#     - instala docker / nginx+certbot / git se faltarem (apt)
-#     - restaura /etc/nginx e /etc/letsencrypt (com backup do que existir)
+#     - verifica/instala docker+compose, nginx, certbot e git ANTES de importar
+#     - restaura /etc/letsencrypt e /etc/nginx/sites-* (backup do que existir)
 #     - clona os projectos do GitHub para /opt quando não existe local
 #     - coloca os .env com permissão 600 no sitio certo
 #     - recria os volumes docker e descompacta os dados
@@ -57,29 +57,60 @@ rm -f "$WORK/bundle.tar.gz"
 apti() {
   if command -v apt-get >/dev/null; then
     export DEBIAN_FRONTEND=noninteractive
-    apt-get update -qq 2>/dev/null || true
-    apt-get install -y -qq "$@" 2>/dev/null || warn "apt falhou: $*"
+    apt-get update -qq >/dev/null 2>&1 || true
+    apt-get install -y -qq "$@" >/dev/null 2>&1
   else
     warn "sem apt-get — instala manualmente: $*"
+    return 1
   fi
 }
 
-# ----------------------------------------------------------------------------
-if [[ $DATA_ONLY -eq 0 ]]; then
-  log "2/9 · Dependências (docker, nginx, certbot, git)"
-  if ! command -v docker >/dev/null; then
-    warn "docker ausente — instalar via get.docker.com"
-    curl -fsSL https://get.docker.com | sh
-    systemctl enable --now docker
+detect_compose() {
+  if docker compose version >/dev/null 2>&1; then
+    COMPOSE=( docker compose )
+  elif command -v docker-compose >/dev/null; then
+    COMPOSE=( docker-compose )
+  else
+    return 1
   fi
-  docker compose version >/dev/null 2>&1 \
-    || warn "docker compose plugin indisponível — corre: apt install docker-compose-plugin"
-  command -v nginx >/dev/null || apti nginx python3-certbot-nginx
-  command -v git   >/dev/null || apti git
-  ok "docker $(docker version --format '{{.Server.Version}}' 2>/dev/null || echo '?') · nginx $(nginx -v 2>&1 || echo '?') · git $(git --version 2>/dev/null || echo '?')"
+}
+
+ensure_docker() {
+  if ! command -v docker >/dev/null; then
+    warn "docker ausente — a instalar"
+    if ! curl -fsSL https://get.docker.com | sh; then
+      apti docker.io || apti docker-ce || die "não consegui instalar o docker"
+    fi
+  fi
+  systemctl enable --now docker >/dev/null 2>&1 \
+    || service docker start >/dev/null 2>&1 || true
+  docker info >/dev/null 2>&1 \
+    || die "daemon docker não responde — inicia o serviço e repete"
+  if ! detect_compose; then
+    apti docker-compose-plugin || apti docker-compose-v2 || true
+    detect_compose || die "docker compose em falta (plugin v2 ou docker-compose)"
+  fi
+  ok "docker $(docker version --format '{{.Server.Version}}' 2>/dev/null || echo '?') · ${COMPOSE[*]}"
+}
+
+# ----------------------------------------------------------------------------
+log "2/9 · Dependências (tudo verificado antes de importar)"
+ensure_docker
+if [[ $DATA_ONLY -eq 0 ]]; then
+  if ! command -v nginx >/dev/null; then
+    apti nginx || die "nginx não instalado e o apt falhou"
+  fi
+  command -v nginx >/dev/null || die "nginx continua indisponível"
+  if [[ -f "$WORK/letsencrypt.tar.gz" ]] && ! command -v certbot >/dev/null; then
+    apti certbot python3-certbot-nginx || die "certbot não instalado e o apt falhou"
+  fi
+  if [[ -n "$(awk -F'|' '$2!=""{print; exit}' "$WORK/projects.txt" 2>/dev/null || true)" ]] \
+     && ! command -v git >/dev/null; then
+    apti git || die "git não instalado e o apt falhou"
+  fi
+  ok "nginx $(nginx -v 2>&1) · git $(git --version 2>/dev/null || echo 'n/a') · certbot $(certbot --version 2>&1 || echo 'n/a')"
 else
-  log "2/9 · (omitido: --data-only)"
-  info "assumido que a infraestrutura já está montada; só dados agora"
+  info "--data-only: só docker + compose são exigidos"
 fi
 
 # ----------------------------------------------------------------------------
@@ -121,22 +152,13 @@ done
 
 # ----------------------------------------------------------------------------
 if [[ $DATA_ONLY -eq 0 ]]; then
-  log "5/9 · Nginx e certificados"
-  if [[ -f "$WORK/nginx.tar.gz" ]]; then
-    if [[ -d /etc/nginx ]]; then
-      BK="/etc/nginx.pre-migracao-$(date +%Y%m%d-%H%M)"
-      mv /etc/nginx "$BK"; warn "nginx anterior guardado em $BK"
-    fi
-    tar -xzf "$WORK/nginx.tar.gz" -C /
-    mkdir -p /var/log/nginx
-    ok "/etc/nginx instalado"
-  else
-    warn "pacote sem nginx.tar.gz — instala configs manualmente"
-  fi
+  log "5/9 · Certificados e sites nginx"
+  TS_SITES="$(date +%Y%m%d-%H%M)"
 
+  # 1) certificados primeiro: os sites referenciam ssl_certificate /etc/letsencrypt/...
   if [[ -f "$WORK/letsencrypt.tar.gz" ]]; then
     if [[ -d /etc/letsencrypt ]]; then
-      BK="/etc/letsencrypt.pre-migracao-$(date +%Y%m%d-%H%M)"
+      BK="/etc/letsencrypt.pre-migracao-$TS_SITES"
       mv /etc/letsencrypt "$BK"; warn "letsencrypt anterior em $BK"
     fi
     tar -xzf "$WORK/letsencrypt.tar.gz" -C /
@@ -144,7 +166,33 @@ if [[ $DATA_ONLY -eq 0 ]]; then
       -exec chmod 600 {} \; 2>/dev/null || true
     ok "/etc/letsencrypt instalado (mesmos certs, renewal incl.)"
   else
-    warn "pacote sem letsencrypt.tar.gz — correr certbot certs no B"
+    warn "pacote sem letsencrypt.tar.gz — correr certbot no B depois do DNS"
+  fi
+
+  # 2) só as configurações de sites (não toca no resto de /etc/nginx)
+  if [[ -f "$WORK/nginx-sites.tar.gz" ]]; then
+    [[ -d /etc/nginx ]] || die "/etc/nginx não existe — nginx devia ter sido instalado no passo 2"
+    for sub in sites-available sites-enabled; do
+      if [[ -d "/etc/nginx/$sub" ]]; then
+        mv "/etc/nginx/$sub" "/etc/nginx/$sub.pre-migracao-$TS_SITES"
+        warn "$sub anterior em /etc/nginx/$sub.pre-migracao-$TS_SITES"
+      fi
+      mkdir -p "/etc/nginx/$sub"
+    done
+    tar -xzf "$WORK/nginx-sites.tar.gz" -C /
+    # o pacote nginx traz um 'default' que não vinha do A → remove para não colidir
+    if ! tar -tzf "$WORK/nginx-sites.tar.gz" | grep -qx 'etc/nginx/sites-enabled/default'; then
+      if [[ -e /etc/nginx/sites-enabled/default ]]; then
+        rm -f /etc/nginx/sites-enabled/default
+        info "removido sites-enabled/default (não vinha do A)"
+      fi
+    fi
+    if [[ -z "$(ls -A /etc/nginx/sites-enabled 2>/dev/null)" ]]; then
+      warn "sites-enabled ficou vazio — ativa à mão: ln -s ../sites-available/<site> /etc/nginx/sites-enabled/"
+    fi
+    ok "sites-available + sites-enabled instalados"
+  else
+    warn "pacote sem nginx-sites.tar.gz — configura os domínios à mão"
   fi
 
   mkdir -p /etc/letsencrypt/renewal-hooks-deploy
@@ -166,8 +214,15 @@ HOOK
   fi
 
   if ! nginx -t 2>"$WORK/nginxt.err"; then
-    cat "$WORK/nginxt.err"
-    die "nginx -t falhou (backup disponível em /etc/nginx.pre-migracao-*)"
+    cat "$WORK/nginxt.err" >&2
+    # rollback: devolve as configs anteriores para não deixar o nginx partido
+    for sub in sites-available sites-enabled; do
+      if [[ -d "/etc/nginx/$sub.pre-migracao-$TS_SITES" ]]; then
+        rm -rf "/etc/nginx/$sub"
+        mv "/etc/nginx/$sub.pre-migracao-$TS_SITES" "/etc/nginx/$sub"
+      fi
+    done
+    die "nginx -t falhou — rollback feito; vê o erro acima (certificado ou include em falta?)"
   fi
   systemctl enable nginx >/dev/null 2>&1 || true
   systemctl restart nginx
@@ -231,11 +286,11 @@ for d in /opt/*/; do
   || -f "$d/compose.yml"       || -f "$d/compose.yaml" ]] || continue
   n="$(basename "$d")"
   echo "  → $n"
-  if ( cd "$d" && docker compose up -d 2>"$WORK/cu.err" ); then
+  if ( cd "$d" && "${COMPOSE[@]}" up -d 2>"$WORK/cu.err" ); then
     ok "$n"
   else
     cat "$WORK/cu.err"
-    if ( cd "$d" && docker compose up -d --build 2>>"$WORK/cu.err" ); then
+    if ( cd "$d" && "${COMPOSE[@]}" up -d --build 2>>"$WORK/cu.err" ); then
       ok "$n (com --build)"
     else
       warn "$n NÃO subiu — ver $WORK/cu.err e: docker compose -f logs"

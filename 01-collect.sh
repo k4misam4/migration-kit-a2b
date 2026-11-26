@@ -13,7 +13,7 @@
 #     sudo ./01-collect.sh --data-only  # só volumes + .env (passagem final)
 #
 #  O que recolhe:
-#     - /etc/nginx          configs de domínios, proxy, mime, conf.d
+#     - /etc/nginx/sites-*  configs de domínios (available + enabled)
 #     - /etc/letsencrypt    certificados + contas + renewal + hooks
 #     - .env                cada projecto em /opt (e compose.override.yml)
 #     - volumes docker      dados de BDs/uploads (/var/lib/docker/volumes)
@@ -119,12 +119,33 @@ fi
 
 # ----------------------------------------------------------------------------
 if [[ $DATA_ONLY -eq 0 ]]; then
-  log "4/9 · Nginx e certificados"
-  if [[ -d /etc/nginx ]]; then
-    tar -czf "$ST/nginx.tar.gz" --numeric-owner -C / etc/nginx
-    ok "nginx.tar.gz (sites/shared/mime tudo incluído)"
+  log "4/9 · Nginx (só sites-*) e certificados"
+  NG_PATHS=()
+  [[ -d /etc/nginx/sites-available ]] && NG_PATHS+=( etc/nginx/sites-available )
+  [[ -d /etc/nginx/sites-enabled   ]] && NG_PATHS+=( etc/nginx/sites-enabled )
+  if [[ ${#NG_PATHS[@]} -gt 0 ]]; then
+    tar -czf "$ST/nginx-sites.tar.gz" --numeric-owner -C / "${NG_PATHS[@]}"
+    ok "nginx-sites.tar.gz (sites-available + sites-enabled, symlinks preservados)"
+    {
+      echo "### ls -l /etc/nginx/sites-enabled"
+      ls -l /etc/nginx/sites-enabled 2>/dev/null
+      echo
+      echo "### include referenciados pelos sites (têm de existir no B)"
+      grep -rhE '^[[:space:]]*include[[:space:]]+' \
+        /etc/nginx/sites-available /etc/nginx/sites-enabled 2>/dev/null \
+        | sed 's/^[[:space:]]*//' | sort -u
+    } > "$ST/nginx-sites-audit.txt"
+    EXTRA_INC="$(grep -rhE '^[[:space:]]*include[[:space:]]+' \
+      /etc/nginx/sites-available /etc/nginx/sites-enabled 2>/dev/null \
+      | sed -E 's/.*include[[:space:]]+//; s/;.*//' | tr -d '"' \
+      | grep -vE '^(/etc/nginx/)?(snippets/|proxy_params|fastcgi_params|mime\.types)' || true)"
+    if [[ -n "$EXTRA_INC" ]]; then
+      warn "os sites fazem include de ficheiros fora de sites-*:"
+      printf '%s\n' "$EXTRA_INC" | sed 's/^/     /' >&2
+      warn "copia esses ficheiros à parte (lista em nginx-sites-audit.txt)"
+    fi
   else
-    warn "não existe /etc/nginx — este servidor corre nginx?"
+    warn "não existem /etc/nginx/sites-available nem sites-enabled"
   fi
   if [[ -d /etc/letsencrypt ]]; then
     tar -czf "$ST/letsencrypt.tar.gz" --numeric-owner -C / etc/letsencrypt
@@ -227,7 +248,7 @@ log "8/9 · Empacotar"
 BARGE="$OUT_DIR/bundle.tar.gz"
 TARLIST=( envs volumes images manifest.txt projects.txt untracked.txt )
 if [[ $DATA_ONLY -eq 0 ]]; then
-  [[ -f "$ST/nginx.tar.gz"        ]] && TARLIST+=( nginx.tar.gz )
+  [[ -f "$ST/nginx-sites.tar.gz"   ]] && TARLIST+=( nginx-sites.tar.gz nginx-sites-audit.txt )
   [[ -f "$ST/letsencrypt.tar.gz" ]] && TARLIST+=( letsencrypt.tar.gz )
   if cpfiles="$(ls "$ST/cron" 2>/dev/null)" && [[ -n "$cpfiles" ]]; then
     TARLIST+=( cron )

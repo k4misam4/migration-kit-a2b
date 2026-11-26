@@ -94,7 +94,7 @@ migration-kit-a2b/
 
 | Peça                  | Referente a                                    |
 |-----------------------|------------------------------------------------|
-| `nginx.tar.gz`        | `/etc/nginx` completo (sites, mime, conf.d)    |
+| `nginx-sites.tar.gz`  | `/etc/nginx/sites-available` + `sites-enabled` (symlinks) |
 | `letsencrypt.tar.gz`  | `/etc/letsencrypt` — certs + **contas** + renewal + hooks |
 | `envs/<proj>.tar.gz`  | `.env`, `*.env`, `compose.override.yml` por projecto |
 | `volumes/<vol>.tar.gz`| dados de cada volume docker                    |
@@ -111,6 +111,10 @@ migration-kit-a2b/
 - **Builds locais** — projectos com `build:` no compose produzem imagens
   `<projecto>-<serviço>`; o collect grava-as. Se o compose usar `image:` com
   nome diferente do gerado, confere no `docker images` do manifest.
+- **Includes fora de `sites-*`** — só os ficheiros de `sites-available` e
+  `sites-enabled` viajam. Se um site fizer `include snippets/x.conf` ou
+  `include conf.d/y.conf` customizados, copia esses ficheiros à parte — o
+  collect lista-os em `nginx-sites-audit.txt`.
 - **Volumes em uso** — a primeira passagem copia a quente. O `tar` pode avisar
   `file changed as we read it` em volumes activos (MinIO, BDs); o script
   continua e assinala o volume como inconsistente. A cópia boa é a da passagem
